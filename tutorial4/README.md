@@ -1,5 +1,4 @@
 # Student Cluster Competition - Tutorial 4
-
 ## Table of Contents
 <!-- markdown-toc start - Don't edit this section. Run M-x markdown-toc-refresh-toc -->
 
@@ -27,6 +26,16 @@
     1. [Prerequisites](#prerequisites)
     1. [Head Node Configuration (Server)](#head-node-configuration-server)
     1. [Compute Node Configuration (Clients)](#compute-node-configuration-clients)
+1. [Integration of Slurm Cluster Monitoring with Grafana](#integration-of-slurm-cluster-monitoring-with-grafana)
+    1. [Weekly Implementation Plan](#weekly-implementation-plan)
+    1. [Cluster Architecture](#cluster-architecture)
+    1. [Prerequisites & Dependencies](#prerequisites--dependencies)
+    1. [Week 1: Cluster Foundation](#week-1-cluster-foundation)
+    1. [Week 2: Slurm Cluster Setup](#week-2-slurm-cluster-setup)
+    1. [Week 3: Monitoring Stack](#week-3-monitoring-stack)
+    1. [Week 4: Slurm Exporter & Integration](#week-4-slurm-exporter--integration)
+    1. [Week 5: Grafana Dashboards and Alerts](#week-5-grafana-dashboards-and-alerts)
+1. [Troubleshooting Guide](#troubleshooting-guide)
 1. [GROMACS Application Benchmark](#gromacs-application-benchmark)
     1. [Protein Visualization](#protein-visualization)
     1. [Benchmark 2 (1.5M Water)](#benchmark-2-15m-water)
@@ -1246,6 +1255,924 @@ sinfo -alN
 ```
 
 The `S:C:T` column means "sockets, cores, threads" and your numbers for your compute node should match the settings that you made in the `slurm.conf` file.
+You said:
+
+# Integration of Slurm Cluster Monitoring with Grafana
+
+## Document Purpose & Scope
+**This document provides a complete, step-by-step guide for setting up a Slurm HPC cluster with Prometheus monitoring, organized by weekly milestones and based on real-world deployment experiences across Rocky Linux and Ubuntu environments.**
+
+*This guide is designed for system administrators and HPC practitioners who need to deploy a production-ready High Performance Computing cluster with comprehensive monitoring capabilities. It combines theoretical best practices with hard-earned practical knowledge from actual deployments.
+
+## Weekly Implementation Plan
+
+### Weekly Breakdown & Strategic Approach
+**This section outlines a phased 4-week implementation strategy to systematically build your HPC cluster, ensuring each layer is properly tested before proceeding to the next.**
+
+- **Week 1**: *Cluster Foundation* - Establishes the basic operational environment including time synchronization, secure communication, and user management
+- **Week 2**: *Slurm Cluster Setup* - Implements the job scheduling system with proper authentication and resource management
+- **Week 3**: *Monitoring Stack* - Deploys the core monitoring infrastructure for system-level metrics
+- **Week 4**: *Slurm Exporter & Integration* - Adds HPC-specific monitoring and completes the full integration
+
+*This phased approach minimizes complexity and ensures each component is validated before integration, reducing troubleshooting overhead.*
+
+---
+
+## Cluster Architecture
+
+### System Design & Component Relationships
+**This section defines the physical and logical layout of your HPC cluster, showing how different components interact and communicate.**
+
+### Final System Architecture (Sebowa OpenStack Example)
+*This table represents a typical production deployment showing service distribution and network configuration:*
+
+| **Role** | **VM Hostname** | **IP Address** | **Ports** | **Services** |
+|----------|-----------------|----------------|-----------|--------------|
+| **Prometheus Server** | new-test | localhost | 9090 | prometheus.service |
+| **Slurm Exporter** | new-test | localhost | 9341 | prometheus-slurm-exporter.service |
+| **Node Exporter (Host)** | new-test | localhost | 9100 | node_exporter.service |
+| **Compute Node 1** | rocky-com-node | - | 9100 | node_exporter.service |
+| **Compute Node 2** | ubuntu-com-node | - | 9100 | node_exporter.service |
+
+*Key Architecture Notes:*
+- *Prometheus and Slurm Exporter co-located on the head node for simplified management*
+- *Node Exporters deployed on all systems for comprehensive hardware monitoring*
+- *Standardized ports ensure consistent firewall and security configurations*
+
+---
+
+## Prerequisites & Dependencies
+
+### Software Requirements & Package Management
+**This section covers all required software packages and dependencies for both Rocky Linux and Ubuntu environments, ensuring compatibility and proper functionality.**
+
+### Essential Packages
+*These packages form the foundation of your HPC cluster and must be installed before proceeding:*
+
+**Rocky Linux:**
+
+bash
+sudo dnf install epel-release -y
+sudo dnf install chrony pdsh pdsh-rcmd-ssh munge slurm-wlm slurmctld slurmd -y
+
+
+**Ubuntu:**
+
+bash
+sudo apt update
+sudo apt install -y chrony pdsh munge libmunge-dev slurm-wlm slurmctld slurmd golang-go git make build-essential libssl-dev libpam0g-dev python3
+
+
+### Monitoring Dependencies
+*Additional packages required for the monitoring infrastructure:*
+
+bash
+# Ubuntu
+sudo apt install -y apt-transport-https software-properties-common wget
+
+# Both systems
+wget https://github.com/prometheus/prometheus/releases/download/v2.37.0/prometheus-2.37.0.linux-amd64.tar.gz
+wget https://github.com/prometheus/node_exporter/releases/download/v1.3.1/node_exporter-1.3.1.linux-amd64.tar.gz
+
+
+*Critical Dependencies:*
+- *EPEL repository (Rocky Linux) provides essential packages not in base repos*
+- *Build tools required for compiling Slurm Exporter from source*
+- *Monitoring binaries downloaded directly from Prometheus for version control*
+
+---
+
+## Week 1: Cluster Foundation
+
+### Core Infrastructure Establishment
+**This week focuses on building the fundamental cluster infrastructure that enables reliable communication, synchronization, and management across all nodes.**
+
+### Time Synchronization (Chrony)
+**Time synchronization is CRITICAL for Slurm operation - mismatched clocks cause job failures and authentication issues.**
+
+#### Installation
+
+bash
+sudo dnf install chrony -y  # Rocky Linux
+sudo apt install chrony -y  # Ubuntu
+sudo systemctl enable chronyd --now
+
+
+#### Configuration (Master Node - node1)
+*The head node serves as the time source for the entire cluster:*
+Edit /etc/chrony.conf:
+
+bash
+allow 192.168.1.0/24        # Permit cluster subnet to sync
+bindaddress 192.168.1.10    # Bind to cluster network interface
+server 0.centos.pool.ntp.org iburst  # External time sources
+server 1.centos.pool.ntp.org iburst
+
+
+#### Client Configuration (node2, node3)
+*Compute nodes synchronize with the head node:*
+Edit /etc/chrony.conf:
+
+bash
+server node1 iburst  # Use head node as primary time source
+
+
+#### Verification
+
+bash
+sudo systemctl restart chronyd
+chronyc tracking      # Check synchronization status
+chronyc sources -v    # Verify time sources
+
+
+### Parallel Command Execution (pdsh)
+**Enables simultaneous command execution across multiple nodes, essential for efficient cluster management.**
+
+#### Installation & Configuration
+
+bash
+# Install EPEL first on Rocky Linux (contains pdsh)
+sudo dnf install epel-release -y
+sudo dnf install pdsh pdsh-rcmd-ssh -y
+
+# Set SSH as default transport (secure alternative to rsh)
+echo 'export PDSH_RCMD_TYPE=ssh' >> ~/.bashrc
+source ~/.bashrc
+
+
+#### SSH Key Setup
+*Establish passwordless SSH for automated cluster management:*
+
+bash
+ssh-keygen -t rsa                    # Generate key pair
+ssh-copy-id node1                    # Distribute to head node
+ssh-copy-id node2                    # Distribute to compute nodes
+ssh-copy-id node3
+
+
+#### Usage Examples
+
+bash
+pdsh hostname                        # Check node connectivity
+pdsh uptime                          # System status across cluster
+pdsh "sudo systemctl restart chronyd" # Service management
+pdcp myfile /tmp/                    # Distributed file copy
+
+
+### User & Permission Management
+**Consistent user and permission configuration is ESSENTIAL for proper Slurm and filesystem operation.**
+
+#### Critical Requirements
+- **Consistent UID/GID across all nodes** - Slurm and shared filesystems use numeric IDs, not usernames
+- **Strict SSH permissions** - Required for passwordless authentication and security
+
+#### SSH Permission Fix
+*SSH requires specific permissions for security:*
+
+bash
+# On remote nodes
+chmod go-w ~                         # Home directory not world-writable
+chmod 700 ~/.ssh                     # SSH directory owner-only access
+chmod 600 ~/.ssh/authorized_keys     # Keys file owner read/write only
+
+# SELinux fix (Rocky/RHEL)
+sudo restorecon -R -v ~/.ssh         # Reset SELinux contexts
+
+
+#### Passwordless Sudo
+*Required for pdsh to execute privileged commands:*
+On all compute nodes, run sudo visudo and add:
+
+bash
+username ALL=(ALL) NOPASSWD: ALL
+
+
+---
+
+## Week 2: Slurm Cluster Setup
+
+### Job Scheduler Implementation
+**This week focuses on deploying Slurm, the workload manager that schedules and manages computational jobs across the cluster.**
+
+### MUNGE Authentication Setup
+**MUNGE provides the authentication layer for Slurm - it MUST be perfectly configured across all nodes.**
+
+#### User Synchronization
+*Munge user must have identical UID/GID on ALL nodes:*
+
+**Problem:** UID/GID mismatch across nodes causes authentication failures
+
+bash
+# Stop service first (required for user modification)
+sudo systemctl stop munged  # Rocky
+sudo systemctl stop munge   # Ubuntu
+
+# Standardize UID/GID to match head node
+sudo usermod -u 993 munge
+sudo groupmod -g 990 munge
+
+# Fix conflicting groups if needed (common issue)
+sudo groupmod -g 1500 fwupd-refresh  # Move conflicting group
+sudo groupmod -g 990 munge           # Now assign to munge
+
+# Reassign files with old IDs (CRITICAL step)
+sudo find / -user 112 -exec chown -h munge {} \;
+sudo find / -group 113 -exec chgrp -h munge {} \;
+
+
+## Key Distribution
+*Munge.key must be identical on all nodes - secure distribution method:*
+
+bash
+# Copy munge.key to all nodes using secure pipe method
+sudo cat /etc/munge/munge.key | ssh rocky@com1 "sudo tee /etc/munge/munge.key > /dev/null"
+
+# Fix ownership and permissions on remote node
+ssh rocky@com1 "sudo chown munge:munge /etc/munge/munge.key && sudo chmod 400 /etc/munge/munge.key"
+
+
+## Verification
+*Test the complete MUNGE authentication chain:*
+
+bash
+# Test Munge authentication between nodes
+munge -n | ssh com2 unmunge
+
+# Verify key consistency across cluster
+sudo md5sum /etc/munge/munge.key
+ssh com2 "sudo md5sum /etc/munge/munge.key"
+
+
+## Slurm Installation
+*Install Slurm components on appropriate nodes:*
+
+bash
+# Rocky Linux
+sudo dnf install slurm-wlm slurmctld slurmd -y
+
+# Ubuntu
+sudo apt install -y slurm-wlm slurmctld slurmd
+
+
+## Slurm Configuration
+
+## Example slurm.conf
+*Main Slurm configuration file - must be identical on all nodes:*
+
+bash
+ClusterName=ubuntu-hpc
+SlurmctldHost=headnode              # Controller hostname
+SlurmUser=slurm                     # Dedicated Slurm user
+StateSaveLocation=/var/spool/slurmctld  # State persistence
+SlurmdSpoolDir=/var/spool/slurmd    # Compute node spool
+
+AuthType=auth/munge                 # MUNGE authentication
+CryptoType=crypto/munge             # MUNGE encryption
+MpiDefault=none                     # No MPI by default
+ProctrackType=proctrack/cgroup      # Process tracking
+ReturnToService=2                   # Error handling
+
+SlurmctldPort=6817                  # Controller port
+SlurmdPort=6818                     # Daemon port
+
+# Logging
+SlurmctldLogFile=/var/log/slurmctld.log
+SlurmdLogFile=/var/log/slurmd.log
+SlurmSchedLogFile=/var/log/slurm_sched.log
+
+# Scheduler
+SchedulerType=sched/backfill        # Backfill scheduling
+SelectType=select/cons_tres         # Resource selection
+SelectTypeParameters=CR_Core        # Core-based scheduling
+
+# Nodes
+NodeName=node[1-3] CPUs=8 State=UNKNOWN  # Compute node definitions
+PartitionName=debug Nodes=node[1-3] Default=YES MaxTime=30 Walltime=00:30:00 State=UP
+
+
+#### Service Management
+*Start and enable Slurm services:*
+
+bash
+# Head node (controller)
+sudo systemctl enable slurmctld
+sudo systemctl start slurmctld
+
+# Compute nodes (daemons)
+sudo systemctl enable slurmd
+sudo systemctl start slurmd
+
+
+#### Configuration Distribution
+*Distribute consistent configuration to all nodes:*
+
+bash
+# Copy slurm.conf to all nodes using secure method
+sudo cat /etc/slurm/slurm.conf | ssh rocky@node1 "sudo tee /etc/slurm/slurm.conf > /dev/null"
+
+
+### Week 2 Verification
+*Comprehensive testing of Slurm functionality:*
+
+bash
+sinfo                    # View node states
+scontrol show nodes      # Detailed node information
+scontrol ping           # Test controller connectivity
+
+# Test job submission
+srun hostname           # Interactive job
+sbatch test_job.sh      # Batch job
+
+
+---
+
+## Week 3: Monitoring Stack
+# Infrastructure Monitoring Deployment
+This week implements the core monitoring infrastructure to track system health, resource utilization, and performance metrics.
+
+## Prometheus Installation
+Prometheus serves as the central metrics collection and storage system.
+
+## Create User & Directories
+*Dedicated user for security and proper directory structure:*
+
+bash
+sudo useradd --no-create-home --shell /bin/false prometheus
+sudo mkdir /etc/prometheus /var/lib/prometheus
+
+
+## Download & Install
+*Install from official binaries for version control:*
+
+bash
+wget -O prometheus.tar.gz https://github.com/prometheus/prometheus/releases/latest/download/prometheus-2.37.0.linux-amd64.tar.gz
+tar -xvf prometheus-2.37.0.linux-amd64.tar.gz
+sudo cp prometheus-2.37.0.linux-amd64/prometheus /usr/local/bin/
+sudo cp prometheus-2.37.0.linux-amd64/promtool /usr/local/bin/
+
+
+## Systemd Service
+*Create service file for proper process management:*
+Create /etc/systemd/system/prometheus.service:
+
+ini
+[Unit]
+Description=Prometheus
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=prometheus
+Group=prometheus
+Type=simple
+ExecStart=/usr/local/bin/prometheus \
+    --config.file /etc/prometheus/prometheus.yml \
+    --storage.tsdb.path /var/lib/prometheus/ \
+    --web.console.templates=/etc/prometheus/consoles \
+    --web.console.libraries=/etc/prometheus/console_libraries
+
+[Install]
+WantedBy=multi-user.target
+
+
+## Start Prometheus
+*Enable and start the service:*
+
+bash
+sudo systemctl daemon-reload
+sudo systemctl enable prometheus
+sudo systemctl start prometheus
+
+
+## Node Exporter Installation
+**Node Exporter collects system-level metrics from each machine.**
+
+
+bash
+wget https://github.com/prometheus/node_exporter/releases/download/v1.3.1/node_exporter-1.3.1.linux-amd64.tar.gz
+tar -xvf node_exporter-1.3.1.linux-amd64.tar.gz
+sudo cp node_exporter-1.3.1.linux-amd64/node_exporter /usr/local/bin/
+
+# Create systemd service for node_exporter
+sudo systemctl enable node_exporter
+sudo systemctl start node_exporter
+
+
+### Grafana Installation (Ubuntu)
+**Grafana provides the visualization interface for monitoring data.**
+
+
+bash
+sudo apt install -y apt-transport-https software-properties-common wget
+wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
+sudo add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"
+sudo apt update
+sudo apt install grafana
+sudo systemctl enable grafana-server
+sudo systemctl start grafana-server
+
+
+### Week 3 Configuration
+
+#### Prometheus Config (/etc/prometheus/prometheus.yml)
+*Configure Prometheus to scrape metrics from all nodes:*
+
+yaml
+global:
+  scrape_interval: 15s    # How often to scrape metrics
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']  # Monitor itself
+
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['headnode:9100', 'node1:9100', 'node2:9100', 'node3:9100']  # All nodes
+
+
+#### Firewall Rules (Ubuntu)
+*Open required ports for monitoring services:*
+
+bash
+sudo ufw allow 9090    # Prometheus web interface
+sudo ufw allow 3000    # Grafana web interface
+sudo ufw allow 9100    # Node Exporter metrics
+
+
+#### Week 3 Verification
+*Test the complete monitoring stack:*
+
+bash
+# Test Prometheus scraping
+curl http://headnode:9090/targets
+
+# Verify services are running
+sudo systemctl status prometheus
+sudo systemctl status node_exporter
+sudo systemctl status grafana-server
+
+
+---
+
+## Week 4: Slurm Exporter & Integration
+
+### HPC-Specific Monitoring
+**This week adds Slurm-specific monitoring to track job statistics, queue states, and scheduler performance.**
+
+### Slurm Exporter Installation
+**Slurm Exporter extracts metrics directly from Slurm utilities.**
+
+#### Build from Source
+*Compile from source for latest features and compatibility:*
+
+bash
+sudo apt install -y golang git make
+git clone https://github.com/vpenso/prometheus-slurm-exporter.git
+cd prometheus-slurm-exporter
+make
+sudo cp slurm_exporter /usr/local/bin/
+
+
+#### Systemd Service
+*Create service with proper dependencies and environment:*
+Create /etc/systemd/system/slurm_exporter.service:
+
+ini
+[Unit]
+Description=Prometheus Slurm Exporter
+Wants=network-online.target
+After=network-online.target slurmctld.service  # Requires Slurm
+
+[Service]
+User=root
+Group=root
+Type=simple
+ExecStart=/usr/local/bin/slurm_exporter
+Restart=always
+Environment="PATH=/usr/bin:/usr/local/bin:/opt/slurm/bin"  # Critical for Slurm binaries
+
+[Install]
+WantedBy=multi-user.target
+
+
+#### Start Slurm Exporter
+
+bash
+sudo systemctl daemon-reload
+sudo systemctl enable slurm_exporter
+sudo systemctl start slurm_exporter
+
+
+### Week 4 Configuration Updates
+
+### Updated Prometheus Config
+*Add Slurm exporter to Prometheus scraping:*
+Edit /etc/prometheus/prometheus.yml:
+
+
+yaml
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['headnode:9100', 'node1:9100', 'node2:9100', 'node3:9100']
+
+  - job_name: 'slurm_exporter'
+    static_configs:
+      - targets: ['headnode:8080']  # or 9341 based on actual port
+
+
+#### Additional Firewall Rules
+
+bash
+sudo ufw allow 9341    # Slurm Exporter port
+
+
+### Week 4 Verification
+
+#### Verify Exporter Metrics
+*Test that Slurm Exporter is providing metrics:*
+
+bash
+curl http://localhost:8080/metrics
+# or
+curl http://localhost:9341/metrics
+
+
+## Test Prometheus Integration
+*Ensure Prometheus is scraping Slurm metrics:*
+
+bash
+# Restart Prometheus to load new config
+sudo systemctl restart prometheus
+
+# Check targets endpoint
+curl http://localhost:9090/api/v1/targets
+
+# Test Slurm metrics in Prometheus UI
+http://headnode:9090/graph
+
+
+## Grafana Configuration
+*Connect Grafana to visualize Slurm metrics:*
+1. Access Grafana at http://headnode:3000
+2. Add Prometheus as data source: http://localhost:9090
+3. Import HPC monitoring dashboards
+4. Verify Slurm metrics are visible
+
+## Final Integration Check
+*End-to-end validation of complete system:*
+
+bash
+# Complete cluster status
+sinfo
+scontrol show nodes
+
+# Monitoring stack status
+sudo systemctl status prometheus node_exporter slurm_exporter grafana-server
+
+# Test end-to-end monitoring
+srun hostname
+# Verify job appears in Slurm exporter metrics
+---
+
+## Troubleshooting Guide
+
+### Problem Resolution Reference
+**This section provides solutions to common issues encountered during HPC cluster deployment, based on real-world troubleshooting experiences.**
+
+### Common Issues & Solutions
+
+#### 1. Prometheus Service Fails to Start
+**Symptom:** Connection refused on port 9090
+
+**Solution:**
+
+bash
+# Check YAML syntax using official tool
+/opt/prometheus/promtool check config /etc/prometheus/prometheus.yml
+
+# Fix indentation errors in prometheus.yml
+sudo systemctl restart prometheus
+
+
+#### 2. Slurm Exporter Port Issues
+**Symptom:** Slurm job in Prometheus shows "down"
+
+**Solution:**
+
+bash
+# Check actual port from service logs
+sudo journalctl -u prometheus-slurm-exporter.service
+
+# Update prometheus.yml with correct port (usually 9341, not 8080)
+
+
+#### 3. Slurm Nodes Show as idle*
+**Solution:**
+
+bash
+sudo systemctl restart slurmd
+scontrol ping
+
+
+#### 4. Jobs Stuck in "Configuring" State
+**Solution:**
+
+bash
+sudo systemctl restart slurmctld
+ping node1  # Ensure hostname resolution works
+
+
+#### 5. Munge Authentication Failures
+**Symptom:** unmunge: Error: Invalid credential
+
+**Solution:**
+- Verify consistent UID/GID for all users across nodes
+- Check munge.key consistency with md5sum
+- Ensure time synchronization
+- Verify socket permissions in /run/munge/
+
+#### 6. Slurmd Service Failures
+**Common Errors & Fixes:**
+
+**Directory missing:**
+
+bash
+sudo mkdir -p /var/spool/slurm
+sudo chown slurm:slurm /var/spool/slurm
+
+
+**CPU count mismatch:**
+
+bash
+# Get correct hardware config
+slurmd -C
+
+# Update slurm.conf with correct NodeName line
+sudo nano /etc/slurm/slurm.conf
+
+
+**Duplicate hostnames:**
+
+bash
+# Fix /etc/hosts on head node
+sudo nano /etc/hosts
+# Add: 192.168.0.6 ubuntu-com-node
+
+
+**Security violation:**
+
+bash
+# Ensure slurm user exists on all nodes with identical UID/GID
+sudo groupadd -g 64030 slurm
+sudo useradd -u 64030 -g 64030 -r -c "Slurm User" -s /sbin/nologin slurm
+
+
+#### 7. Node Exporters Not Scraping
+**Symptom:** "context deadline exceeded" in Prometheus targets
+
+**Solution:**
+- Add inbound firewall rules for port 9100
+- Verify security groups in OpenStack/cloud environment
+- Test connectivity: curl http://node1:9100/metrics
+
+#### 8. Slurm Exporter Shows No Metrics
+**Solution:**
+
+bash
+# Ensure Slurm binaries are in PATH
+echo $PATH
+which scontrol
+which squeue
+
+# Add to service file if needed
+Environment="PATH=/usr/bin:/usr/local/bin:/opt/slurm/bin"
+
+# Week 5: Grafana Dashboards and Alerts
+
+## Project Overview
+Integrate Prometheus data into Grafana and create comprehensive dashboards for SLURM cluster monitoring.
+
+---
+
+## SLURM Monitoring Dashboard Setup
+
+### Overview
+This guide walks you through setting up a Grafana dashboard for monitoring SLURM workload manager activity using Prometheus metrics.
+
+### Prerequisites
+- Grafana instance installed and running
+- Prometheus data source configured in Grafana  
+- SLURM metrics being exported to Prometheus
+
+### Dashboard Installation
+
+#### Step 1: Create New Dashboard
+1. Navigate to the **Dashboards** section in Grafana
+2. Click on **"New"** 
+3. Select **"Import"** from the dropdown menu
+
+#### Step 2: Import Dashboard
+1. In the import screen, enter the Grafana dashboard ID: **`4323`**
+2. Click **"Load"** to load the dashboard configuration
+
+#### Step 3: Configure Data Source
+1. Select **Prometheus** as your data source from the dropdown menu
+2. Click **"Import"** to complete the installation
+
+### Verification Steps
+1. Execute SLURM jobs in your cluster
+2. Monitor the dashboard graphs for spikes in activity
+3. Refer to the images in the project folder for expected visualizations
+
+### Dashboard Features
+- Real-time monitoring of SLURM job activity
+- Resource utilization metrics
+- Queue status and job statistics
+- Performance indicators and alerts
+  
+---
+## Dashboard Visualizations
+
+Graph 1: Backfill Scheduler Cycles
+<img width="1085" height="584" alt="graph1" src="https://github.com/user-attachments/assets/7f9660e6-56c4-4e1e-861e-1a989ba7017a" />
+Monitor backfill scheduler performance metrics
+
+Graph 2: Job Status Overview
+<img width="1053" height="389" alt="graph2" src="https://github.com/user-attachments/assets/fcd1df1e-71d6-45be-a843-bc5ae79e9040" />
+Track job states across the cluster
+
+Graph 3: Scheduler Cycle Performance
+<img width="1094" height="668" alt="graph3" src="https://github.com/user-attachments/assets/fbe1c982-9296-427e-a4f5-5ceafa6fed20" />
+Monitor overall scheduler performance
+
+Graph 4: Detailed Job Statistics
+<img width="1089" height="674" alt="graph4" src="https://github.com/user-attachments/assets/6718de08-2def-48e2-b482-3e40516adf9e" />
+Detailed view of job distribution and trends
+
+
+**Note**: Ensure your Prometheus instance is properly scraping SLURM metrics before expecting data in the dashboard.
+
+# SMTP Setup with Gmail for Grafana Alerts
+
+## Overview
+Configure Gmail SMTP to enable email notifications for Grafana alerts in your SLURM monitoring setup.
+
+## Prerequisites
+- Gmail account created for the group
+- 2-step verification enabled on Gmail account
+- Grafana running in Docker container
+
+## Gmail App Password Setup
+
+### Step 1: Generate App Password
+1. Navigate to: [Google App Passwords](https://support.google.com/accounts/answer/185833?hl=en)
+2. Log into your Gmail account
+   <img width="1361" height="715" alt="Grafana email setup_2" src="https://github.com/user-attachments/assets/cda73165-2c42-48c3-82db-0827b5b8fda4" />
+
+4. Provide an app name: **"Grafana"**
+   <img width="1361" height="711" alt="App name for email_3" src="https://github.com/user-attachments/assets/1c0a3e26-7795-4803-addd-96550377f5ca" />
+
+5. Copy the generated 16-character password for later use
+
+
+## Grafana SMTP Configuration
+
+### Docker Environment Setup
+Since Grafana runs in Docker, configure SMTP via the `grafana.ini` file:
+
+1. **Access the configuration file**:
+   ```bash
+   nano /etc/grafana/grafana.ini
+   ```
+
+2. **Locate and configure the SMTP section**:
+   <img width="1126" height="428" alt="grafanaIni" src="https://github.com/user-attachments/assets/670a749b-4ff6-4676-9748-43020d9736bc" />
+
+   ```ini
+   [smtp]
+   enabled = true
+   host = smtp.gmail.com:587
+   user = your-email@gmail.com
+   password = your-generated-app-password
+   from_address = your-email@gmail.com
+   from_name = Grafana Alerts
+   startTLS_policy = OpportunisticStartTLS
+   ```
+
+## Grafana Alerting Configuration
+
+### Step 1: Add Prometheus Data Source
+1. Go to **Home** → **Connections** → **Data sources**
+2. Click **"Add Data Source"**
+3. Search for and select **Prometheus**
+4. Configure connection:
+   - **Prometheus server URL**: `http://localhost:9090`
+5. Click **"Save & Test"** to verify successful connection
+
+### Step 2: Create Contact Point
+
+#### Add Email Contact Point
+1. Navigate to **Alerting** → **Contact points**
+2. Click **"Add contact point"**
+3. Configure settings:
+   - **Name**: `Node Down`
+   - **Integration**: `Email`
+   - **Addresses**: `dcdaggers01@gmail.com`
+
+4. **Test the configuration**:
+   - Click **"Test"** → **"Send test notification"**
+     <img width="1352" height="710" alt="Test email" src="https://github.com/user-attachments/assets/240bf1c5-b497-46d4-9a7d-dd9266f93e93" />
+
+   - Verify receipt in your email inbox
+     <img width="1362" height="678" alt="Email inbox" src="https://github.com/user-attachments/assets/962d0597-1879-41f1-bbe4-b7829c406eba" />
+
+   - Click **"Save contact point"** after successful test
+
+### Step 3: Create Alert Rule
+
+#### Configure Alert Rule
+1. **Basic Information**:
+   - **Rule name**: `Node Down`
+
+2. **Query Configuration**:
+   <img width="580" height="648" alt="Alert Rule section A" src="https://github.com/user-attachments/assets/0dd67695-48bb-4565-abe0-b554fcddda8a" />
+
+   - **Query A**:
+     ```promql
+     up{job="node_exporter"} == 0
+     ```
+   - **Query B**:
+     ```promql
+     job_success{job="myjob"} == 0
+     ```
+
+4. **Evaluation Settings**:
+   - **Evaluate every**: `1m`
+
+5. **Organization**:
+   - **Folder**: Create new folder `Node Down Alerts`
+   - Configure appropriate labels
+    <img width="664" height="424" alt="Alert Label" src="https://github.com/user-attachments/assets/71971b57-db95-476b-82a4-f20bb61d129a" />
+
+
+6. **Evaluation Behavior**:
+   <img width="577" height="586" alt="Alert Section 3   4" src="https://github.com/user-attachments/assets/35abcb5c-6205-4252-b67e-        190cb0b8f3ac" />
+
+   - **Evaluation group name**: `Evaluation Group`
+   - **Pending period**: `1m`
+
+7. **Notifications**:
+   - Add the previously created contact point as recipient
+
+8. **Notification Message** (Optional):
+   ```text
+   Node {{ $labels.instance }} is DOWN
+   ```
+
+9. **Save** the alert rule
+
+## Verification Checklist
+- [ ] Gmail app password generated successfully
+- [ ] SMTP configuration added to `grafana.ini`
+- [ ] Prometheus data source connected (port 9090)
+- [ ] Test email notification received
+- [ ] Contact point saved successfully
+- [ ] Alert rule active and monitoring
+
+## Troubleshooting
+- **Gmail Authentication**: Ensure 2-step verification is enabled and app password is 16 characters
+- **SMTP Issues**: Verify port 587 is open and credentials are correct
+- **Prometheus Connection**: Confirm Prometheus is running on port 9090
+- **Docker Network**: Ensure container can reach external SMTP servers
+
+## Security Notes
+- The Gmail app password is different from your account password
+- Keep the app password secure and regenerate if compromised
+- Regularly review active app passwords in Google Account settings
+
+---
+
+**Next Steps**: Monitor alert triggers and refine notification messages based on your SLURM cluster's specific requirements.
+
+### Final Notes & Best Practices
+
+- **Time Synchronization:** Critical for Slurm operation - use Chrony exclusively on Rocky Linux
+- **UID/GID Consistency:** Essential for shared filesystems and Munge authentication
+- **Firewall Configuration:** Ensure all required ports are open across nodes
+- **Regular Verification:** Use the weekly checklists to ensure progress
+- **Documentation:** Keep configuration files and procedures documented for future maintenance
+
+**This comprehensive weekly guide combines lessons learned from multiple real-world deployments and provides a structured approach to building a fully monitored HPC cluster with Slurm.**
+
 
 # GROMACS Application Benchmark
 
