@@ -2148,6 +2148,299 @@ Since Grafana runs in Docker, configure SMTP via the `grafana.ini` file:
 - [ ] Contact point saved successfully
 - [ ] Alert rule active and monitoring
 
+## NFS Server Setup Summary
+
+### Installation & Service Management
+```bash
+sudo pacman -Syu nfs-utils
+sudo systemctl enable nfs-server
+sudo systemctl start nfs-server
+```
+
+### NFS Export Configuration
+The `/etc/exports` configuration:
+```
+/home	192.168.0.0/28(rw,async,no_subtree_check,no_root_squash)
+```
+
+**Options explained:**
+- `rw`: Read-write access
+- `async`: Better performance but slightly less safe
+- `no_subtree_check`: Improves reliability
+- `no_root_squash`: Allows root user access (use with caution)
+
+### Applying Changes
+```bash
+sudo exportfs -ra  # Re-export all
+sudo exportfs -v   # Verify exports
+```
+
+## Mounting NFS Shares
+```bash
+sudo mount -t nfs 192.168.0.12:/home /home
+```
+
+## SSH Configuration
+
+### Hosts File (/etc/hosts)
+```
+192.168.0.12 headnode
+192.168.0.13 com1
+```
+
+### SSH Config (~/.ssh/config)
+```ssh-config
+Host headnode
+    Hostname 192.168.0.12
+    User arch
+    IdentityFile ~/.ssh/id_ed25519
+
+Host com1
+    Hostname 192.168.0.13
+    User arch
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+## Security Considerations
+
+1. **Firewall**: Ensure NFS ports are open:
+   ```bash
+   sudo ufw allow from 192.168.0.0/28 to any port nfs
+   ```
+
+2. **Alternative to `no_root_squash`**: Consider using user mapping instead for better security.
+
+3. **Network Security**: Restrict NFS exports to your private network only.
+
+## Useful Commands
+
+- Check NFS status: `sudo systemctl status nfs-server`
+- View mounted shares: `showmount -e 192.168.0.12`
+- Unmount NFS: `sudo umount /home`
+
+## Persistent Mounts
+For automatic mounting at boot, add to `/etc/fstab`:
+```
+192.168.0.12:/home /home nfs defaults 0 0
+```
+
+This setup creates a seamless distributed environment where the home directory is shared across all nodes, and SSH access is simplified through the shared configuration.
+
+This is a well-structured iptables firewall configuration for an Arch Linux NFS cluster in OpenStack. Here are some observations and recommendations:
+
+## Current Configuration Analysis
+
+### Strengths:
+- **Secure defaults**: DROP policies for INPUT and FORWARD
+- **Essential services covered**: SSH, NFS, NTP
+- **Connection state tracking**: Allows established connections
+- **Loopback interface**: Properly configured for local services
+
+### Potential Issues & Recommendations:
+
+## 1. NFS Port Considerations
+
+Your NFS configuration might need additional ports, especially for NFSv4:
+
+```bash
+# For NFSv4 with locked status (optional)
+sudo iptables -A INPUT -p tcp --dport 32803 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 32769 -j ACCEPT
+
+# For rpc.statd (optional, for file locking)
+sudo iptables -A INPUT -p tcp --dport 4000:4003 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 4000:4003 -j ACCEPT
+```
+
+## 2. Security Enhancements
+
+### Rate limiting for SSH (prevents brute force):
+```bash
+sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m limit --limit 3/min --limit-burst 3 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j DROP
+```
+
+### ICMP (ping) support:
+```bash
+sudo iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+```
+
+## 3. Network-Specific Rules
+
+Consider restricting access to your private network only:
+```bash
+# Replace with your actual network
+sudo iptables -A INPUT -p tcp --dport 22 -s 192.168.0.0/28 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 2049 -s 192.168.0.0/28 -j ACCEPT
+```
+
+## 4. Complete Improved Script
+
+```bash
+#!/bin/bash
+
+# Flush existing rules
+sudo iptables -F
+
+# Set default policies
+sudo iptables -P INPUT DROP
+sudo iptables -P FORWARD DROP
+sudo iptables -P OUTPUT ACCEPT
+
+# Allow loopback
+sudo iptables -A INPUT -i lo -j ACCEPT
+
+# Allow established connections
+sudo iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# Allow ICMP (ping)
+sudo iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+
+# SSH with rate limiting
+sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m limit --limit 3/min --limit-burst 3 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j DROP
+
+# NFS ports
+sudo iptables -A INPUT -p tcp --dport 111 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 111 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 2049 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 2049 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 20048 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 20048 -j ACCEPT
+
+# NTP
+sudo iptables -A INPUT -p udp --dport 123 -j ACCEPT
+
+# Save rules
+sudo mkdir -p /etc/iptables
+sudo iptables-save > /etc/iptables/iptables.rules
+```
+
+## 5. Verification Commands
+
+After configuration, verify with:
+```bash
+# Check current rules
+sudo iptables -L -v
+
+# Check with line numbers (for management)
+sudo iptables -L -v --line-numbers
+
+# Test NFS connectivity from compute nodes
+showmount -e headnode
+```
+
+## 6. Management Tips
+
+### To insert a rule at specific position:
+```bash
+sudo iptables -I INPUT 5 -p tcp --dport 80 -j ACCEPT
+```
+
+### To delete a rule:
+```bash
+sudo iptables -D INPUT 3
+```
+
+### Temporary disable:
+```bash
+sudo systemctl stop iptables
+```
+
+
+## Grafana Configuration Fix Summary
+
+### The Problem
+- Grafana was looking for config at `/etc/grafana.ini` by default
+- Actual config file location: `/etc/grafana/grafana.ini`
+
+### The Solution
+Using systemd drop-in files to override the service configuration:
+
+```bash
+sudo systemctl edit grafana
+```
+
+**Content added:**
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/grafana server --config=/etc/grafana/grafana.ini --homepath=/usr/share/grafana
+```
+
+### Verification Commands
+```bash
+# Reload systemd
+sudo systemctl daemon-reload
+
+# Restart Grafana
+sudo systemctl restart grafana
+
+# Verify the override
+systemctl cat grafana
+
+# Check service status
+sudo systemctl status grafana
+```
+
+## Key Points Explained
+
+### 1. **systemctl edit** Behavior
+- Creates: `/etc/systemd/system/grafana.service.d/override.conf`
+- This is the proper way to modify systemd services without editing original files
+
+### 2. **ExecStart=** Clearing
+- The empty `ExecStart=` line is crucial - it clears the existing command
+- Without this, you'd get duplicate `ExecStart` directives error
+
+### 3. **Alternative Approaches**
+
+**Option A: Symlink (quick fix)**
+```bash
+sudo ln -s /etc/grafana/grafana.ini /etc/grafana.ini
+```
+
+**Option B: Environment variable**
+```bash
+sudo systemctl edit grafana
+```
+```ini
+[Service]
+Environment=GF_PATHS_CONFIG=/etc/grafana/grafana.ini
+```
+
+## Additional Grafana Management Tips
+
+### Check current config paths:
+```bash
+grafana-server -h
+```
+
+### View all Grafana paths:
+```bash
+sudo -u grafana grafana-server config paths
+```
+
+### Useful Grafana commands:
+```bash
+# Enable auto-start on boot
+sudo systemctl enable grafana
+
+# View logs for debugging
+sudo journalctl -u grafana -f
+
+# Test configuration
+sudo -u grafana grafana-server -config /etc/grafana/grafana.ini cfg:default.paths.logs=/var/log/grafana
+```
+
+## Common Grafana Issues on Arch
+
+1. **Permission issues**: Ensure `grafana` user owns data/log directories
+2. **Database path**: Check `data` path in `grafana.ini`
+3. **Port conflicts**: Default port 3000 might be in use
+
+The solution is the recommended approach for Arch Linux, as it preserves the package manager's files while providing the necessary customization. The use of systemd drop-in files ensures your changes survive package updates.
+
 ## Troubleshooting
 - **Gmail Authentication**: Ensure 2-step verification is enabled and app password is 16 characters
 - **SMTP Issues**: Verify port 587 is open and credentials are correct
