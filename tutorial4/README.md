@@ -1276,6 +1276,7 @@ You said:
 *This phased approach minimizes complexity and ensures each component is validated before integration, reducing troubleshooting overhead.*
 
 ---
+---
 
 ## Cluster Architecture
 
@@ -1283,78 +1284,68 @@ You said:
 **This section defines the physical and logical layout of your HPC cluster, showing how different components interact and communicate.**
 
 ### Final System Architecture (Sebowa OpenStack Example)
-*This table represents a typical production deployment showing service distribution and network configuration:*
+This table represents a typical production deployment showing service distribution and network configuration:
 
 | **Role** | **VM Hostname** | **IP Address** | **Ports** | **Services** |
 |----------|-----------------|----------------|-----------|--------------|
-| **Prometheus Server** | new-test | localhost | 9090 | prometheus.service |
-| **Slurm Exporter** | new-test | localhost | 9341 | prometheus-slurm-exporter.service |
-| **Node Exporter (Host)** | new-test | localhost | 9100 | node_exporter.service |
+| **Prometheus Server** | head-node | localhost | 9090 | prometheus.service |
+| **Slurm Exporter** | head-node | localhost | 9341 | prometheus-slurm-exporter.service |
+| **Node Exporter (Host)** | head-node | localhost | 9100 | node_exporter.service |
 | **Compute Node 1** | rocky-com-node | - | 9100 | node_exporter.service |
 | **Compute Node 2** | ubuntu-com-node | - | 9100 | node_exporter.service |
+| **Compute Node 3** | arch-com-node | - | 9100 | node_exporter.service |
 
-*Key Architecture Notes:*
-- *Prometheus and Slurm Exporter co-located on the head node for simplified management*
-- *Node Exporters deployed on all systems for comprehensive hardware monitoring*
-- *Standardized ports ensure consistent firewall and security configurations*
+
+Key Architecture Notes:
+- Prometheus and Slurm Exporter co-located on the head node for simplified management
+- Node Exporters deployed on all systems for comprehensive hardware monitoring
+- Standardized ports ensure consistent firewall and security configurations
+- Head-node configurations is the same for all Distros
 
 ---
 
 ## Prerequisites & Dependencies
 
 ### Software Requirements & Package Management
-**This section covers all required software packages and dependencies for both Rocky Linux and Ubuntu environments, ensuring compatibility and proper functionality.**
+This section covers all required software packages and dependencies for both Rocky Linux and Ubuntu environments, ensuring compatibility and proper functionality.
 
 ### Essential Packages
-*These packages form the foundation of your HPC cluster and must be installed before proceeding:*
+These packages form the foundation of your HPC cluster and must be installed before proceeding:
 
 **Rocky Linux:**
 ```bash
 sudo dnf install epel-release -y
-sudo dnf install chrony pdsh pdsh-rcmd-ssh munge slurm-wlm slurmctld slurmd -y
+sudo dnf install chrony pdsh pdsh-rcmd-ssh munge slurm-wlm slurmctld slurmd wget -y
 ```
 
 **Ubuntu:**
 ```bash
 sudo apt update
-sudo apt install -y chrony pdsh munge libmunge-dev slurm-wlm slurmctld slurmd golang-go git make build-essential libssl-dev libpam0g-dev python3
+sudo apt install -y chrony pdsh munge libmunge-dev slurm-wlm slurmctld slurmd golang-go git make build-essential libssl-dev libpam0g-dev python3  apt-transport-https software-properties-common wget
 ```
 
-### Monitoring Dependencies
-*Additional packages required for the monitoring infrastructure:*
+**Arch Linux**
 ```bash
-# Ubuntu
-sudo apt install -y apt-transport-https software-properties-common wget
-
-# Both systems
-wget https://github.com/prometheus/prometheus/releases/download/v2.37.0/prometheus-2.37.0.linux-amd64.tar.gz
-wget https://github.com/prometheus/node_exporter/releases/download/v1.3.1/node_exporter-1.3.1.linux-amd64.tar.gz
-```
-
-*Critical Dependencies:*
-- *EPEL repository (Rocky Linux) provides essential packages not in base repos*
-- *Build tools required for compiling Slurm Exporter from source*
-- *Monitoring binaries downloaded directly from Prometheus for version control*
-
+sudo pacman -Syu --noconfirm
+sudo pacman -Sy --noconfirm chrony pdsh munge go git make base-devel openssl pam python wget 
+````
 ---
 
 ## Week 1: Cluster Foundation
 
 ### Core Infrastructure Establishment
-**This week focuses on building the fundamental cluster infrastructure that enables reliable communication, synchronization, and management across all nodes.**
+This week focuses on building the fundamental cluster infrastructure that enables reliable communication, synchronization, and management across all nodes.
 
 ### Time Synchronization (Chrony)
-**Time synchronization is CRITICAL for Slurm operation - mismatched clocks cause job failures and authentication issues.**
+Time synchronization is CRITICAL for Slurm operation - mismatched clocks cause job failures and authentication issues.
 
-#### Installation
+#### Enable chrony before configuration
 ```bash
-sudo dnf install chrony -y  # Rocky Linux
-sudo apt install chrony -y  # Ubuntu
 sudo systemctl enable chronyd --now
 ```
 
 #### Configuration (Master Node - node1)
-*The head node serves as the time source for the entire cluster:*
+The head node serves as the time source for the entire cluster:
 Edit /etc/chrony.conf:
 ```bash
 allow 192.168.1.0/24        # Permit cluster subnet to sync
@@ -1364,7 +1355,7 @@ server 1.centos.pool.ntp.org iburst
 ```
 
 #### Client Configuration (node2, node3)
-*Compute nodes synchronize with the head node:*
+Compute nodes synchronize with the head node:
 Edit /etc/chrony.conf:
 ```bash
 server node1 iburst  # Use head node as primary time source
@@ -1378,21 +1369,17 @@ chronyc sources -v    # Verify time sources
 ```
 
 ### Parallel Command Execution (pdsh)
-**Enables simultaneous command execution across multiple nodes, essential for efficient cluster management.**
+Enables simultaneous command execution across multiple nodes, essential for efficient cluster management.
 
-#### Installation & Configuration
+#### Configure PDSH
 ```bash
-# Install EPEL first on Rocky Linux (contains pdsh)
-sudo dnf install epel-release -y
-sudo dnf install pdsh pdsh-rcmd-ssh -y
-
 # Set SSH as default transport (secure alternative to rsh)
 echo 'export PDSH_RCMD_TYPE=ssh' >> ~/.bashrc
 source ~/.bashrc
 ```
 
 #### SSH Key Setup
-*Establish passwordless SSH for automated cluster management:*
+Establish passwordless SSH for automated cluster management:
 ```bash
 ssh-keygen -t rsa                    # Generate key pair
 ssh-copy-id node1                    # Distribute to head node
@@ -1416,7 +1403,7 @@ pdcp myfile /tmp/                    # Distributed file copy
 - **Strict SSH permissions** - Required for passwordless authentication and security
 
 #### SSH Permission Fix
-*SSH requires specific permissions for security:*
+SSH requires specific permissions for security:
 ```bash
 # On remote nodes
 chmod go-w ~                         # Home directory not world-writable
@@ -1428,30 +1415,183 @@ sudo restorecon -R -v ~/.ssh         # Reset SELinux contexts
 ```
 
 #### Passwordless Sudo
-*Required for pdsh to execute privileged commands:*
+Required for pdsh to execute privileged commands:
 On all compute nodes, run sudo visudo and add:
 ```bash
 username ALL=(ALL) NOPASSWD: ALL
 ```
+## NFS Server Setup Summary
 
----
+### Installation & Service Management
+```bash
+sudo pacman -Syu nfs-utils  ## all arch nodes
+sudo dnf install nfs-utils  ## all rocky nodes
+sudo apt install nfs-kernel-server ## ubuntu headnode
+sudo apt install nfs-common  ## ubuntu comnodes
+sudo systemctl enable nfs-server ## arch & rocky headnode
+sudo systemctl start nfs-server
+
+sudo systemctl enable nfs-kernel-server ## ubuntu
+sudo systemctl start nfs-kernel-server 
+
+```
+
+### NFS Export Configuration
+The `/etc/exports` configuration (replace 192.168.0.0/28 with your private network address):
+```
+/home	192.168.0.0/28(rw,async,no_subtree_check,no_root_squash)
+```
+
+**Options explained:**
+- `rw`: Read-write access
+- `async`: Better performance but slightly less safe
+- `no_subtree_check`: Improves reliability
+- `no_root_squash`: Allows root user access (use with caution)
+
+### Applying Changes
+```bash
+sudo exportfs -ra  # Re-export all
+sudo exportfs -v   # Verify exports
+```
+
+## Mounting NFS Shares
+```bash
+sudo mount -t nfs 192.168.0.12:/home /home
+```
+
+## SSH Configuration
+
+### Hosts File (/etc/hosts) Option 1
+```
+192.168.0.12 headnode
+192.168.0.13 com1
+```
+
+### SSH Config (~/.ssh/config) Option 2
+```ssh-config
+Host headnode
+    Hostname 192.168.0.12
+    User arch
+    IdentityFile ~/.ssh/id_ed25519
+
+Host com1
+    Hostname 192.168.0.13
+    User arch
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+## Persistent Mounts
+For automatic mounting at boot, add to `/etc/fstab`:
+```
+192.168.0.12:/home /home nfs defaults 0 0
+```
+
+This setup creates a seamless distributed environment where the home directory is shared across all nodes, and SSH access is simplified through the shared configuration.
+
+## Firewall Configuration
+
+**This is the configuration for Arch Linux and a similar software configuration was done for all other nodes**
+### Improved iptables Configuration Script
+This script opens the ports for the following services: ssh,icmp,nfs,ntp
+```bash
+#!/bin/bash
+
+# Flush existing rules
+sudo iptables -F
+
+# Set default policies
+sudo iptables -P INPUT DROP
+sudo iptables -P FORWARD DROP
+sudo iptables -P OUTPUT ACCEPT
+
+# Allow loopback
+sudo iptables -A INPUT -i lo -j ACCEPT
+
+# Allow established connections
+sudo iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# Allow ICMP (ping)
+sudo iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+
+# SSH with rate limiting
+sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m limit --limit 3/min --limit-burst 3 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j DROP
+
+# NFS ports
+sudo iptables -A INPUT -p tcp --dport 111 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 111 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 2049 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 2049 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 20048 -j ACCEPT
+sudo iptables -A INPUT -p udp --dport 20048 -j ACCEPT
+
+# NTP
+sudo iptables -A INPUT -p udp --dport 123 -j ACCEPT
+
+# Save rules
+sudo mkdir -p /etc/iptables
+sudo iptables-save > /etc/iptables/iptables.rules
+```
+
+### Verification Commands
+```bash
+# Check current rules
+sudo iptables -L -v
+
+# Check with line numbers (for management)
+sudo iptables -L -v --line-numbers
+
+# Test NFS connectivity from compute nodes
+showmount -e headnode
+```
+## 5. Verification Commands
+
+After configuration, verify with:
+```bash
+# Check current rules
+sudo iptables -L -v
+
+# Check with line numbers (for management)
+sudo iptables -L -v --line-numbers
+
+# Test NFS connectivity from compute nodes
+showmount -e headnode
+```
+
+## 6. Management Tips
+
+### To insert a rule at specific position:
+```bash
+sudo iptables -I INPUT 5 -p tcp --dport 80 -j ACCEPT
+```
+
+### To delete a rule:
+```bash
+sudo iptables -D INPUT 3
+```
+
+### Temporary disable:
+```bash
+sudo systemctl stop iptables
+
+```
 
 ## Week 2: Slurm Cluster Setup
 
 ### Job Scheduler Implementation
-**This week focuses on deploying Slurm, the workload manager that schedules and manages computational jobs across the cluster.**
+This week focuses on deploying Slurm, the workload manager that schedules and manages computational jobs across the cluster.
 
 ### MUNGE Authentication Setup
 **MUNGE provides the authentication layer for Slurm - it MUST be perfectly configured across all nodes.**
 
 #### User Synchronization
-*Munge user must have identical UID/GID on ALL nodes:*
+Munge user must have identical UID/GID on ALL nodes:
 
 **Problem:** UID/GID mismatch across nodes causes authentication failures
 ```bash
 # Stop service first (required for user modification)
 sudo systemctl stop munged  # Rocky
-sudo systemctl stop munge   # Ubuntu
+sudo systemctl stop munge   # Ubuntu & Arch
 
 # Standardize UID/GID to match head node
 sudo usermod -u 993 munge
@@ -1467,7 +1607,7 @@ sudo find / -group 113 -exec chgrp -h munge {} \;
 ```
 
 #### Key Distribution
-*Munge.key must be identical on all nodes - secure distribution method:*
+Munge.key must be identical on all nodes - secure distribution method:
 ```bash
 # Copy munge.key to all nodes using secure pipe method
 sudo cat /etc/munge/munge.key | ssh rocky@com1 "sudo tee /etc/munge/munge.key > /dev/null"
@@ -1477,7 +1617,7 @@ ssh rocky@com1 "sudo chown munge:munge /etc/munge/munge.key && sudo chmod 400 /e
 ```
 
 #### Verification
-*Test the complete MUNGE authentication chain:*
+Test the complete MUNGE authentication chain:
 ```bash
 # Test Munge authentication between nodes
 munge -n | ssh com2 unmunge
@@ -1488,19 +1628,24 @@ ssh com2 "sudo md5sum /etc/munge/munge.key"
 ```
 
 #### Slurm Installation
-*Install Slurm components on appropriate nodes:*
+Install Slurm components on appropriate nodes:
 ```bash
 # Rocky Linux
-sudo dnf install slurm-wlm slurmctld slurmd -y
+sudo dnf install -y slurm-wlm slurmctld slurmd
 
 # Ubuntu
 sudo apt install -y slurm-wlm slurmctld slurmd
+
+# Arch Linux (official repository)
+sudo pacman -Syyu
+sudo pacman -S slurm
+
 ```
 
 ### Slurm Configuration
 
 #### Example slurm.conf
-*Main Slurm configuration file - must be identical on all nodes:*
+Main Slurm configuration file - must be identical on all nodes:
 ```bash
 ClusterName=ubuntu-hpc
 SlurmctldHost=headnode              # Controller hostname
@@ -1533,7 +1678,7 @@ PartitionName=debug Nodes=node[1-3] Default=YES MaxTime=30 Walltime=00:30:00 Sta
 ```
 
 #### Service Management
-*Start and enable Slurm services:*
+Start and enable Slurm services:
 ```bash
 # Head node (controller)
 sudo systemctl enable slurmctld
@@ -1545,14 +1690,14 @@ sudo systemctl start slurmd
 ```
 
 #### Configuration Distribution
-*Distribute consistent configuration to all nodes:*
+Distribute consistent configuration to all nodes:
 ```bash
 # Copy slurm.conf to all nodes using secure method
 sudo cat /etc/slurm/slurm.conf | ssh rocky@node1 "sudo tee /etc/slurm/slurm.conf > /dev/null"
 ```
 
-### Week 2 Verification
-*Comprehensive testing of Slurm functionality:*
+### Verification
+Comprehensive testing of Slurm functionality:
 ```bash
 sinfo                    # View node states
 scontrol show nodes      # Detailed node information
@@ -1567,20 +1712,20 @@ sbatch test_job.sh      # Batch job
 ## Week 3: Monitoring Stack
 
 ### Infrastructure Monitoring Deployment
-**This week implements the core monitoring infrastructure to track system health, resource utilization, and performance metrics.**
+This week implements the core monitoring infrastructure to track system health, resource utilization, and performance metrics.
 
-### Prometheus Installation
-**Prometheus serves as the central metrics collection and storage system.**
+### Prometheus Installation on the headnode
+Prometheus serves as the central metrics collection and storage system
 
 #### Create User & Directories
-*Dedicated user for security and proper directory structure:*
+Dedicated user for security and proper directory structure:
 ```bash
 sudo useradd --no-create-home --shell /bin/false prometheus
 sudo mkdir /etc/prometheus /var/lib/prometheus
 ```
 
 #### Download & Install
-*Install from official binaries for version control:*
+Install from official binaries for version control:
 ```bash
 wget -O prometheus.tar.gz https://github.com/prometheus/prometheus/releases/latest/download/prometheus-2.37.0.linux-amd64.tar.gz
 tar -xvf prometheus-2.37.0.linux-amd64.tar.gz
@@ -1589,7 +1734,7 @@ sudo cp prometheus-2.37.0.linux-amd64/promtool /usr/local/bin/
 ```
 
 #### Systemd Service
-*Create service file for proper process management:*
+Create service file for proper process management:
 Create /etc/systemd/system/prometheus.service:
 ```ini
 [Unit]
@@ -1610,43 +1755,8 @@ ExecStart=/usr/local/bin/prometheus \
 [Install]
 WantedBy=multi-user.target
 ```
-
-#### Start Prometheus
-*Enable and start the service:*
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable prometheus
-sudo systemctl start prometheus
-```
-
-### Node Exporter Installation
-**Node Exporter collects system-level metrics from each machine.**
-```bash
-wget https://github.com/prometheus/node_exporter/releases/download/v1.3.1/node_exporter-1.3.1.linux-amd64.tar.gz
-tar -xvf node_exporter-1.3.1.linux-amd64.tar.gz
-sudo cp node_exporter-1.3.1.linux-amd64/node_exporter /usr/local/bin/
-
-# Create systemd service for node_exporter
-sudo systemctl enable node_exporter
-sudo systemctl start node_exporter
-```
-
-### Grafana Installation (Ubuntu)
-**Grafana provides the visualization interface for monitoring data.**
-```bash
-sudo apt install -y apt-transport-https software-properties-common wget
-wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
-sudo add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"
-sudo apt update
-sudo apt install grafana
-sudo systemctl enable grafana-server
-sudo systemctl start grafana-server
-```
-
-### Week 3 Configuration
-
 #### Prometheus Config (/etc/prometheus/prometheus.yml)
-*Configure Prometheus to scrape metrics from all nodes:*
+Configure Prometheus to scrape metrics from all nodes:
 ```yaml
 global:
   scrape_interval: 15s    # How often to scrape metrics
@@ -1658,19 +1768,56 @@ scrape_configs:
 
   - job_name: 'node_exporter'
     static_configs:
-      - targets: ['headnode:9100', 'node1:9100', 'node2:9100', 'node3:9100']  # All nodes
+      - targets: ['node1:9100', 'node2:9100']  # All nodes
+```
+#### Start Prometheus
+Enable and start the service:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable prometheus
+sudo systemctl start prometheus
 ```
 
-#### Firewall Rules (Ubuntu)
-*Open required ports for monitoring services:*
+
+### Node Exporter Installation on the compute nodes
+Node Exporter collects system-level metrics from each machine.
 ```bash
+wget https://github.com/prometheus/node_exporter/releases/download/v1.3.1/node_exporter-1.3.1.linux-amd64.tar.gz
+tar -xvf node_exporter-1.3.1.linux-amd64.tar.gz
+sudo cp node_exporter-1.3.1.linux-amd64/node_exporter /usr/local/bin/
+sudo systemctl enable node_exporter
+sudo systemctl start node_exporter
+```
+
+### Grafana Installation on the headnode
+Grafana provides the visualization interface for monitoring data.
+```bash
+#Ubuntu
+wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
+sudo add-apt-repository "deb https://packages.grafana.com/oss/deb stable main"
+sudo apt update
+sudo apt install grafana
+#Rocky
+sudo dnf install grafana
+#Arch
+sudo pacman -Syu grafana
+
+####Start grafana server
+sudo systemctl enable grafana-server
+sudo systemctl start grafana-server
+```
+
+#### Firewall Rules
+Open required ports for monitoring services:
+```bash
+#Example for Ubuntu
 sudo ufw allow 9090    # Prometheus web interface
 sudo ufw allow 3000    # Grafana web interface
 sudo ufw allow 9100    # Node Exporter metrics
 ```
 
-#### Week 3 Verification
-*Test the complete monitoring stack:*
+#### Verification
+Test the complete monitoring stack:
 ```bash
 # Test Prometheus scraping
 curl http://headnode:9090/targets
@@ -1683,16 +1830,16 @@ sudo systemctl status grafana-server
 
 ---
 
-## Week 4: Slurm Exporter & Integration
+## Week 4: Slurm Exporter & Integration 
 
 ### HPC-Specific Monitoring
-**This week adds Slurm-specific monitoring to track job statistics, queue states, and scheduler performance.**
+This week adds Slurm-specific monitoring to track job statistics, queue states, and scheduler performance.
 
-### Slurm Exporter Installation
-**Slurm Exporter extracts metrics directly from Slurm utilities.**
+### Slurm Exporter Installation on the compute nodes
+Slurm Exporter extracts metrics directly from Slurm utilities.
 
 #### Build from Source
-*Compile from source for latest features and compatibility:*
+Compile from source for latest features and compatibility:
 ```bash
 sudo apt install -y golang git make
 git clone https://github.com/vpenso/prometheus-slurm-exporter.git
@@ -1702,7 +1849,7 @@ sudo cp slurm_exporter /usr/local/bin/
 ```
 
 #### Systemd Service
-*Create service with proper dependencies and environment:*
+Create service with proper dependencies and environment:
 Create /etc/systemd/system/slurm_exporter.service:
 ```ini
 [Unit]
@@ -1729,10 +1876,10 @@ sudo systemctl enable slurm_exporter
 sudo systemctl start slurm_exporter
 ```
 
-### Week 4 Configuration Updates
+### Configuration Updates
 
 #### Updated Prometheus Config
-*Add Slurm exporter to Prometheus scraping:*
+Add Slurm exporter to Prometheus scraping:
 Edit /etc/prometheus/prometheus.yml:
 ```yaml
 global:
@@ -1745,7 +1892,7 @@ scrape_configs:
 
   - job_name: 'node_exporter'
     static_configs:
-      - targets: ['headnode:9100', 'node1:9100', 'node2:9100', 'node3:9100']
+      - targets: ['node1:9100', 'node2:9100']
 
   - job_name: 'slurm_exporter'
     static_configs:
@@ -1757,10 +1904,10 @@ scrape_configs:
 sudo ufw allow 9341    # Slurm Exporter port
 ```
 
-### Week 4 Verification
+### Verification
 
 #### Verify Exporter Metrics
-*Test that Slurm Exporter is providing metrics:*
+Test that Slurm Exporter is providing metrics:
 ```bash
 curl http://localhost:8080/metrics
 # or
@@ -1768,7 +1915,7 @@ curl http://localhost:9341/metrics
 ```
 
 #### Test Prometheus Integration
-*Ensure Prometheus is scraping Slurm metrics:*
+Ensure Prometheus is scraping Slurm metrics:
 ```bash
 # Restart Prometheus to load new config
 sudo systemctl restart prometheus
@@ -1781,14 +1928,14 @@ http://headnode:9090/graph
 ```
 
 #### Grafana Configuration
-*Connect Grafana to visualize Slurm metrics:*
+Connect Grafana to visualize Slurm metrics:
 1. Access Grafana at http://headnode:3000
 2. Add Prometheus as data source: http://localhost:9090
 3. Import HPC monitoring dashboards
 4. Verify Slurm metrics are visible
 
 #### Final Integration Check
-*End-to-end validation of complete system:*
+End-to-end validation of complete system:
 ```bash
 # Complete cluster status
 sinfo
@@ -1802,120 +1949,11 @@ srun hostname
 # Verify job appears in Slurm exporter metrics
 ```
 
----
+## Week 5: Grafana Dashboards and Alerts
 
-## Troubleshooting Guide
-
-### Problem Resolution Reference
-**This section provides solutions to common issues encountered during HPC cluster deployment, based on real-world troubleshooting experiences.**
-
-### Common Issues & Solutions
-
-#### 1. Prometheus Service Fails to Start
-**Symptom:** Connection refused on port 9090
-
-**Solution:**
-```bash
-# Check YAML syntax using official tool
-/opt/prometheus/promtool check config /etc/prometheus/prometheus.yml
-
-# Fix indentation errors in prometheus.yml
-sudo systemctl restart prometheus
-```
-
-#### 2. Slurm Exporter Port Issues
-**Symptom:** Slurm job in Prometheus shows "down"
-
-**Solution:**
-```bash
-# Check actual port from service logs
-sudo journalctl -u prometheus-slurm-exporter.service
-
-# Update prometheus.yml with correct port (usually 9341, not 8080)
-```
-
-#### 3. Slurm Nodes Show as idle*
-**Solution:**
-```bash
-sudo systemctl restart slurmd
-scontrol ping
-```
-
-#### 4. Jobs Stuck in "Configuring" State
-**Solution:**
-```bash
-sudo systemctl restart slurmctld
-ping node1  # Ensure hostname resolution works
-```
-
-#### 5. Munge Authentication Failures
-**Symptom:** unmunge: Error: Invalid credential
-
-**Solution:**
-- Verify consistent UID/GID for all users across nodes
-- Check munge.key consistency with md5sum
-- Ensure time synchronization
-- Verify socket permissions in /run/munge/
-
-#### 6. Slurmd Service Failures
-**Common Errors & Fixes:**
-
-**Directory missing:**
-```bash
-sudo mkdir -p /var/spool/slurm
-sudo chown slurm:slurm /var/spool/slurm
-```
-**CPU count mismatch:**
-
-bash
-# Get correct hardware config
-slurmd -C
-
-# Update slurm.conf with correct NodeName line
-sudo nano /etc/slurm/slurm.conf
-
-
-**Duplicate hostnames:**
-
-bash
-# Fix /etc/hosts on head node
-sudo nano /etc/hosts
-# Add: 192.168.0.6 ubuntu-com-node
-
-
-**Security violation:**
-
-bash
-# Ensure slurm user exists on all nodes with identical UID/GID
-sudo groupadd -g 64030 slurm
-sudo useradd -u 64030 -g 64030 -r -c "Slurm User" -s /sbin/nologin slurm
-
-
-#### 7. Node Exporters Not Scraping
-**Symptom:** "context deadline exceeded" in Prometheus targets
-
-**Solution:**
-- Add inbound firewall rules for port 9100
-- Verify security groups in OpenStack/cloud environment
-- Test connectivity: curl http://node1:9100/metrics
-
-#### 8. Slurm Exporter Shows No Metrics
-**Solution:**
-
-bash
-# Ensure Slurm binaries are in PATH
-echo $PATH
-which scontrol
-which squeue
-
-# Add to service file if needed
-Environment="PATH=/usr/bin:/usr/local/bin:/opt/slurm/bin"
-# Week 5: Grafana Dashboards and Alerts
-
-## Project Overview
+### Project Overview
 Integrate Prometheus data into Grafana and create comprehensive dashboards for SLURM cluster monitoring.
 
----
 
 ## SLURM Monitoring Dashboard Setup
 
@@ -1953,7 +1991,6 @@ This guide walks you through setting up a Grafana dashboard for monitoring SLURM
 - Queue status and job statistics
 - Performance indicators and alerts
 
----
 ## Dashboard Visualizations
 
 **Graph 1: Backfill Scheduler Cycles**  
@@ -1993,6 +2030,11 @@ Configure Gmail SMTP to enable email notifications for Grafana alerts in your SL
 3. Provide an app name: **"Grafana"**  
 ![App name for email](https://github.com/user-attachments/assets/1c0a3e26-7795-4803-addd-96550377f5ca)
 4. Copy the generated 16-character password for later use
+
+### Security Notes
+- The Gmail app password is different from your account password
+- Keep the app password secure and regenerate if compromised
+- Regularly review active app passwords in Google Account settings
 
 ## Grafana SMTP Configuration
 
@@ -2085,177 +2127,136 @@ Since Grafana runs in Docker, configure SMTP via the `grafana.ini` file:
 
 8. **Save** the alert rule
 
-## Verification Checklist
-- [ ] Gmail app password generated successfully
-- [ ] SMTP configuration added to `grafana.ini`
-- [ ] Prometheus data source connected (port 9090)
-- [ ] Test email notification received
-- [ ] Contact point saved successfully
-- [ ] Alert rule active and monitoring
 
-## NFS Server Setup Summary
+## Additional Grafana Management Tips
 
-### Installation & Service Management
+### Check current config paths:
 ```bash
-sudo pacman -Syu nfs-utils
-sudo systemctl enable nfs-server
-sudo systemctl start nfs-server
+grafana-server -h
 ```
 
-### NFS Export Configuration
-The `/etc/exports` configuration:
-```
-/home	192.168.0.0/28(rw,async,no_subtree_check,no_root_squash)
-```
-
-**Options explained:**
-- `rw`: Read-write access
-- `async`: Better performance but slightly less safe
-- `no_subtree_check`: Improves reliability
-- `no_root_squash`: Allows root user access (use with caution)
-
-### Applying Changes
+### View all Grafana paths:
 ```bash
-sudo exportfs -ra  # Re-export all
-sudo exportfs -v   # Verify exports
+sudo -u grafana grafana-server config paths
 ```
 
-## Mounting NFS Shares
+### Useful Grafana commands:
 ```bash
-sudo mount -t nfs 192.168.0.12:/home /home
+# Enable auto-start on boot
+sudo systemctl enable grafana
+
+# View logs for debugging
+sudo journalctl -u grafana -f
+
+# Test configuration
+sudo -u grafana grafana-server -config /etc/grafana/grafana.ini cfg:default.paths.logs=/var/log/grafana
 ```
 
-## SSH Configuration
 
-### Hosts File (/etc/hosts)
-```
-192.168.0.12 headnode
-192.168.0.13 com1
-```
+---
 
-### SSH Config (~/.ssh/config)
-```ssh-config
-Host headnode
-    Hostname 192.168.0.12
-    User arch
-    IdentityFile ~/.ssh/id_ed25519
+**Next Steps**: Monitor alert triggers and refine notification messages based on your SLURM cluster's specific requirements.
 
-Host com1
-    Hostname 192.168.0.13
-    User arch
-    IdentityFile ~/.ssh/id_ed25519
-```
+### Final Notes & Best Practices
 
-## Security Considerations
+- **Time Synchronization:** Critical for Slurm operation - use Chrony exclusively on Rocky Linux
+- **UID/GID Consistency:** Essential for shared filesystems and Munge authentication
+- **Firewall Configuration:** Ensure all required ports are open across nodes
+- **Regular Verification:** Use the weekly checklists to ensure progress
+- **Documentation:** Keep configuration files and procedures documented for future maintenance
 
-1. **Firewall**: Ensure NFS ports are open:
-   ```bash
-   sudo ufw allow from 192.168.0.0/28 to any port nfs
-   ```
+**This comprehensive weekly guide combines lessons learned from multiple real-world deployments and provides a structured approach to building a fully monitored HPC cluster with Slurm.**
 
-2. **Alternative to `no_root_squash`**: Consider using user mapping instead for better security.
+## Troubleshooting Guide
 
-3. **Network Security**: Restrict NFS exports to your private network only.
+### Problem Resolution Reference
+This section provides solutions to common issues encountered during HPC cluster deployment, based on real-world troubleshooting experiences.
 
-## Useful Commands
+### Common Issues & Solutions
 
-- Check NFS status: `sudo systemctl status nfs-server`
-- View mounted shares: `showmount -e 192.168.0.12`
-- Unmount NFS: `sudo umount /home`
+#### 1. Prometheus Service Fails to Start
+**Symptom:** Connection refused on port 9090
 
-## Persistent Mounts
-For automatic mounting at boot, add to `/etc/fstab`:
-```
-192.168.0.12:/home /home nfs defaults 0 0
-```
-
-This setup creates a seamless distributed environment where the home directory is shared across all nodes, and SSH access is simplified through the shared configuration.
-
-## Firewall Configuration for Arch Linux NFS Cluster
-
-### Improved iptables Configuration Script
+**Solution:**
 ```bash
-#!/bin/bash
+# Check YAML syntax using official tool
+/opt/prometheus/promtool check config /etc/prometheus/prometheus.yml
 
-# Flush existing rules
-sudo iptables -F
-
-# Set default policies
-sudo iptables -P INPUT DROP
-sudo iptables -P FORWARD DROP
-sudo iptables -P OUTPUT ACCEPT
-
-# Allow loopback
-sudo iptables -A INPUT -i lo -j ACCEPT
-
-# Allow established connections
-sudo iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-
-# Allow ICMP (ping)
-sudo iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
-
-# SSH with rate limiting
-sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -m limit --limit 3/min --limit-burst 3 -j ACCEPT
-sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j DROP
-
-# NFS ports
-sudo iptables -A INPUT -p tcp --dport 111 -j ACCEPT
-sudo iptables -A INPUT -p udp --dport 111 -j ACCEPT
-sudo iptables -A INPUT -p tcp --dport 2049 -j ACCEPT
-sudo iptables -A INPUT -p udp --dport 2049 -j ACCEPT
-sudo iptables -A INPUT -p tcp --dport 20048 -j ACCEPT
-sudo iptables -A INPUT -p udp --dport 20048 -j ACCEPT
-
-# NTP
-sudo iptables -A INPUT -p udp --dport 123 -j ACCEPT
-
-# Save rules
-sudo mkdir -p /etc/iptables
-sudo iptables-save > /etc/iptables/iptables.rules
+# Fix indentation errors in prometheus.yml
+sudo systemctl restart prometheus
 ```
 
-### Verification Commands
+#### 2. Slurm Exporter Port Issues
+**Symptom:** Slurm job in Prometheus shows "down"
+
+**Solution:**
 ```bash
-# Check current rules
-sudo iptables -L -v
+# Check actual port from service logs
+sudo journalctl -u prometheus-slurm-exporter.service
 
-# Check with line numbers (for management)
-sudo iptables -L -v --line-numbers
-
-# Test NFS connectivity from compute nodes
-showmount -e headnode
+# Update prometheus.yml with correct port (usually 9341, not 8080)
 ```
-## 5. Verification Commands
 
-After configuration, verify with:
+#### 3. Slurm Nodes Show as idle*
+**Solution:**
 ```bash
-# Check current rules
-sudo iptables -L -v
-
-# Check with line numbers (for management)
-sudo iptables -L -v --line-numbers
-
-# Test NFS connectivity from compute nodes
-showmount -e headnode
+sudo systemctl restart slurmd
+scontrol ping
 ```
 
-## 6. Management Tips
-
-### To insert a rule at specific position:
+#### 4. Jobs Stuck in "Configuring" State
+**Solution:**
 ```bash
-sudo iptables -I INPUT 5 -p tcp --dport 80 -j ACCEPT
+sudo systemctl restart slurmctld
+ping node1  # Ensure hostname resolution works
 ```
 
-### To delete a rule:
+#### 5. Munge Authentication Failures
+**Symptom:** unmunge: Error: Invalid credential
+
+**Solution:**
+- Verify consistent UID/GID for all users across nodes
+- Check munge.key consistency with md5sum
+- Ensure time synchronization
+- Verify socket permissions in /run/munge/
+
+#### 6. Slurmd Service Failures
+**Common Errors & Fixes:**
+
+**Directory missing:**
 ```bash
-sudo iptables -D INPUT 3
+sudo mkdir -p /var/spool/slurm
+sudo chown slurm:slurm /var/spool/slurm
 ```
+### Get correct hardware config
+slurmd -C
 
-### Temporary disable:
-```bash
-sudo systemctl stop iptables
-```
+### Update slurm.conf with correct NodeName line
+sudo nano /etc/slurm/slurm.conf
 
+### Ensure slurm user exists on all nodes with identical UID/GID
+sudo groupadd -g 64030 slurm
+sudo useradd -u 64030 -g 64030 -r -c "Slurm User" -s /sbin/nologin slurm
+
+
+#### 7. Node Exporters Not Scraping
+**Symptom:** "context deadline exceeded" in Prometheus targets
+
+**Solution:**
+- Add inbound firewall rules for port 9100
+- Verify security groups in OpenStack/cloud environment
+- Test connectivity: curl http://node1:9100/metrics
+
+#### 8. Slurm Exporter Shows No Metrics
+**Solution:**
+
+### Ensure Slurm binaries are in PATH
+echo $PATH
+which scontrol
+which squeue
+
+### Add to service file if needed
+Environment="PATH=/usr/bin:/usr/local/bin:/opt/slurm/bin"
 
 ## Grafana Configuration Fix Summary
 
@@ -2317,31 +2318,6 @@ sudo systemctl edit grafana
 [Service]
 Environment=GF_PATHS_CONFIG=/etc/grafana/grafana.ini
 ```
-
-## Additional Grafana Management Tips
-
-### Check current config paths:
-```bash
-grafana-server -h
-```
-
-### View all Grafana paths:
-```bash
-sudo -u grafana grafana-server config paths
-```
-
-### Useful Grafana commands:
-```bash
-# Enable auto-start on boot
-sudo systemctl enable grafana
-
-# View logs for debugging
-sudo journalctl -u grafana -f
-
-# Test configuration
-sudo -u grafana grafana-server -config /etc/grafana/grafana.ini cfg:default.paths.logs=/var/log/grafana
-```
-
 ## Common Grafana Issues on Arch
 
 1. **Permission issues**: Ensure `grafana` user owns data/log directories
@@ -2350,30 +2326,14 @@ sudo -u grafana grafana-server -config /etc/grafana/grafana.ini cfg:default.path
 
 The solution is the recommended approach for Arch Linux, as it preserves the package manager's files while providing the necessary customization. The use of systemd drop-in files ensures your changes survive package updates.
 
-## Troubleshooting
+## Other Grafana Issues
+
 - **Gmail Authentication**: Ensure 2-step verification is enabled and app password is 16 characters
 - **SMTP Issues**: Verify port 587 is open and credentials are correct
 - **Prometheus Connection**: Confirm Prometheus is running on port 9090
 - **Docker Network**: Ensure container can reach external SMTP servers
 
-## Security Notes
-- The Gmail app password is different from your account password
-- Keep the app password secure and regenerate if compromised
-- Regularly review active app passwords in Google Account settings
 
----
-
-**Next Steps**: Monitor alert triggers and refine notification messages based on your SLURM cluster's specific requirements.
-
-### Final Notes & Best Practices
-
-- **Time Synchronization:** Critical for Slurm operation - use Chrony exclusively on Rocky Linux
-- **UID/GID Consistency:** Essential for shared filesystems and Munge authentication
-- **Firewall Configuration:** Ensure all required ports are open across nodes
-- **Regular Verification:** Use the weekly checklists to ensure progress
-- **Documentation:** Keep configuration files and procedures documented for future maintenance
-
-**This comprehensive weekly guide combines lessons learned from multiple real-world deployments and provides a structured approach to building a fully monitored HPC cluster with Slurm.**
 
 
 # GROMACS Application Benchmark
